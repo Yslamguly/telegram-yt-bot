@@ -95,7 +95,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "• Or use `/download <url>`\n\n"
         "*Other commands:*\n"
         "• `/help` — Show usage instructions\n"
-        "• `/update` — Update yt\\-dlp to latest version",
+        "• `/update` — Update yt\\-dlp to latest version\n"
+        "• `/cookies` — Check or update YouTube cookies",
         parse_mode="MarkdownV2",
     )
 
@@ -115,9 +116,83 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"• Max video duration: {config.MAX_VIDEO_DURATION_MINUTES} minutes\n"
         "• Videos over 50 MB are automatically re\\-encoded\n\n"
         "*Admin commands:*\n"
-        "• `/update` — Update yt\\-dlp to the latest version",
+        "• `/update` — Update yt\\-dlp to the latest version\n"
+        "• `/cookies` — View cookies status or upload a new `cookies.txt`",
         parse_mode="MarkdownV2",
     )
+
+
+@authorized_only
+async def cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the /cookies command — show cookie file status or explain how to update."""
+    target_path = config.YOUTUBE_COOKIES_FILE or "/app/cookies/cookies.txt"
+    if os.path.isfile(target_path) and os.path.getsize(target_path) > 0:
+        size = os.path.getsize(target_path)
+        mtime = os.path.getmtime(target_path)
+        from datetime import datetime, timezone
+        dt = datetime.fromtimestamp(mtime, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        await update.message.reply_text(
+            f"🍪 *YouTube Cookies Status: Active*\n\n"
+            f"• File: `{target_path}`\n"
+            f"• Size: `{size:,} bytes`\n"
+            f"• Last updated: `{dt}`\n\n"
+            f"💡 *To update:* Simply send your new `cookies.txt` file as a document into this chat.",
+            parse_mode="Markdown",
+        )
+    else:
+        await update.message.reply_text(
+            f"🍪 *YouTube Cookies Status: Missing*\n\n"
+            f"No cookies file found at `{target_path}`.\n\n"
+            f"💡 *To add cookies:* Export cookies from your browser and send the `cookies.txt` file as a document directly into this chat.",
+            parse_mode="Markdown",
+        )
+
+
+@authorized_only
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle document uploads — accept cookies.txt to update cookies without SSH."""
+    doc = update.message.document
+    if not doc:
+        return
+
+    file_name = doc.file_name or ""
+    if not file_name.lower().endswith(".txt"):
+        return
+
+    status_msg = await update.message.reply_text("📥 Processing uploaded cookies file...")
+    try:
+        tg_file = await doc.get_file()
+        file_bytes = await tg_file.download_as_bytearray()
+
+        content = file_bytes.decode("utf-8", errors="ignore")
+        # Validate that it looks like a cookies file
+        if "Netscape HTTP Cookie File" not in content and "youtube.com" not in content:
+            await status_msg.edit_text(
+                "⚠️ *Invalid cookies file*\n\n"
+                "The uploaded file does not look like a Netscape format cookies file from YouTube.\n"
+                "Please make sure it starts with `# Netscape HTTP Cookie File` and contains YouTube cookies.",
+                parse_mode="Markdown",
+            )
+            return
+
+        target_path = config.YOUTUBE_COOKIES_FILE or "/app/cookies/cookies.txt"
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        with open(target_path, "wb") as f:
+            f.write(file_bytes)
+
+        size = len(file_bytes)
+        logger.info("Cookies updated via Telegram upload: %s (%d bytes)", target_path, size)
+        await status_msg.edit_text(
+            f"✅ *Cookies updated successfully!*\n\n"
+            f"• File: `{os.path.basename(target_path)}`\n"
+            f"• Size: `{size:,} bytes`\n"
+            f"• Saved to: `{target_path}`\n\n"
+            f"The bot will use these cookies immediately for future downloads.",
+            parse_mode="Markdown",
+        )
+    except Exception as exc:
+        logger.exception("Failed to save uploaded cookies file")
+        await status_msg.edit_text(f"❌ Failed to save cookies: {exc}")
 
 
 @authorized_only
@@ -127,7 +202,7 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     try:
         process = await asyncio.create_subprocess_exec(
-            "pip", "install", "--upgrade", "yt-dlp",
+            "pip", "install", "--upgrade", "yt-dlp[default]",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -310,6 +385,8 @@ def register_handlers(application) -> None:
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("download", download_command))
     application.add_handler(CommandHandler("update", update_command))
+    application.add_handler(CommandHandler("cookies", cookies_command))
+    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )

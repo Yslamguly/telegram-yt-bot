@@ -66,6 +66,7 @@ docker compose logs -f
 | `/help` | Show help and usage instructions |
 | `/download <url>` | Download a YouTube video |
 | `/update` | Update yt-dlp to the latest version |
+| `/cookies` | Check YouTube cookies status or send a `cookies.txt` file |
 
 ## Configuration Reference
 
