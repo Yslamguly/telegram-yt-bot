@@ -55,10 +55,9 @@ class Config:
         cookies_file = os.environ.get("YOUTUBE_COOKIES_FILE", "/app/cookies/cookies.txt")
         if cookies_file and not Path(cookies_file).is_file():
             logging.warning(
-                "YouTube cookies file not found at %s — downloads may be blocked by YouTube",
+                "YouTube cookies file not found at %s at startup — will check dynamically at runtime",
                 cookies_file,
             )
-            cookies_file = None
 
         download_dir = os.environ.get("DOWNLOAD_DIR", "/tmp/yt-downloads")
         Path(download_dir).mkdir(parents=True, exist_ok=True)

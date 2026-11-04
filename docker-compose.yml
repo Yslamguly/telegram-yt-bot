@@ -6,7 +6,7 @@ services:
     env_file: .env
     volumes:
       - downloads:/tmp/yt-downloads
-      - ./cookies:/app/cookies:ro
+      - ./cookies:/app/cookies
     environment:
       - PYTHONUNBUFFERED=1
 

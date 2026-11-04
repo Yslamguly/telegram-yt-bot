@@ -107,11 +107,18 @@ def download_video(
                 "format": "jpg",
             }
         ],
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "ios", "web"]
+            }
+        },
     }
 
-    if cookies_file and os.path.isfile(cookies_file):
+    if cookies_file and os.path.isfile(cookies_file) and os.path.getsize(cookies_file) > 0:
         ydl_opts["cookiefile"] = cookies_file
-        logger.info("Using YouTube cookies from %s", cookies_file)
+        logger.info("Using YouTube cookies from %s (%d bytes)", cookies_file, os.path.getsize(cookies_file))
+    else:
+        logger.warning("No valid YouTube cookies found at %s — yt-dlp will proceed without cookies", cookies_file)
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
