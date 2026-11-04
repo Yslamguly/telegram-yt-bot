@@ -99,14 +99,18 @@ def download_video(
         "outtmpl": os.path.join(download_dir, "%(id)s.%(ext)s"),
         "writethumbnail": True,
         "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
+        "quiet": False,
+        "no_warnings": False,
         "postprocessors": [
             {
                 "key": "FFmpegThumbnailsConvertor",
                 "format": "jpg",
             }
         ],
+        "js_runtimes": {
+            "deno": {},
+            "node": {},
+        },
         "extractor_args": {
             "youtube": {
                 "player_client": ["android", "ios", "web"]

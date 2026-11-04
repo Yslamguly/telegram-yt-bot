@@ -6,7 +6,7 @@ echo " Telegram YouTube Downloader Bot"
 echo "========================================"
 echo ""
 echo "Updating yt-dlp to latest version..."
-pip install --upgrade --quiet yt-dlp
+pip install --upgrade --quiet "yt-dlp[default]"
 echo "yt-dlp version: $(yt-dlp --version)"
 echo ""
 echo "Starting bot..."

@@ -1,10 +1,13 @@
 FROM python:3.12-slim
 
-# Install system dependencies
+# Install system dependencies (ffmpeg and Node.js)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg && \
+    apt-get install -y --no-install-recommends ffmpeg nodejs && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+
+# Install Deno JS runtime (recommended by yt-dlp for EJS challenges)
+COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
 
 # Set working directory
 WORKDIR /app
