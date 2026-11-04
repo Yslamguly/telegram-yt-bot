@@ -1,0 +1,14 @@
+services:
+  yt-bot:
+    build: .
+    container_name: telegram-yt-bot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - downloads:/tmp/yt-downloads
+      - ./cookies:/app/cookies:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+
+volumes:
+  downloads:

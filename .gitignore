@@ -1,0 +1,12 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+cookies/*
+!cookies/.gitkeep
+downloads/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
