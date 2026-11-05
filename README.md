@@ -37,11 +37,10 @@ A Telegram bot that downloads YouTube videos and sends them directly to your cha
 3. Block all public access (default)
 4. Create an IAM user with S3 access and get the credentials
 
-### 4. Set Up YouTube Cookies (Optional but Recommended)
-1. Install browser extension "Get cookies.txt LOCALLY" (Chrome/Firefox)
-2. Visit youtube.com while logged in
-3. Export cookies using the extension
-4. Save the file as `cookies/cookies.txt` in the project directory
+### 4. Set Up YouTube Cookies (Recommended)
+YouTube often requires bot verification on cloud/datacenter IPs. You can provide cookies using either method:
+- **Via Telegram Chat (Easiest):** After starting the bot, send `/cookies` to check status, or simply drag-and-drop your `cookies.txt` file directly into your Telegram chat with the bot.
+- **Via File System:** Save the file as `cookies/cookies.txt` in the project directory before running `docker compose up -d`.
 
 ### 5. Configure
 ```bash
@@ -66,14 +65,43 @@ docker compose logs -f
 | `/help` | Show help and usage instructions |
 | `/download <url>` | Download a YouTube video |
 | `/update` | Update yt-dlp to the latest version |
-| `/cookies` | Check YouTube cookies status or send a `cookies.txt` file |
+| `/cookies` | View current cookies status and instructions |
+| `/users` | View all authorized usernames and IDs |
+| `/authorize <@username or ID>` | Add a user to whitelist at runtime |
+| `/deauthorize <@username or ID>` | Remove a user from whitelist at runtime |
+
+## Managing YouTube Cookies
+
+YouTube blocks anonymous automated requests on datacenter IPs with `"Sign in to confirm you're not a bot"`. Supplying authenticated cookies bypasses this block.
+
+### Best Practice: Use a "Burner" Google Account
+> [!IMPORTANT]
+> **Never use your primary personal Google account.**
+> Use a secondary "throwaway" Google account to export cookies. If YouTube ever flags automated downloading sessions, your primary email, drive, and personal data remain completely safe and unaffected.
+
+### How to Export Cookies
+1. Log into YouTube using a secondary/burner Google account in your web browser.
+2. Install the extension **"Get cookies.txt LOCALLY"** ([Chrome](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc) / [Firefox](https://addons.mozilla.org/en-US/firefox/addon/get-cookies-txt-locally/)).
+3. Click the extension icon on an active YouTube tab and export in **Netscape** format as `cookies.txt`.
+
+### How to Check and Update Cookies via Telegram (No SSH Needed)
+You do not need to log into your server or restart Docker when cookies expire:
+
+1. **Check Status:** Send `/cookies` in your chat with the bot.
+   - The bot displays whether cookies are active, the file size, and the timestamp of the last update.
+2. **Update Cookies:**
+   - Attach and send your exported `cookies.txt` file as a document directly into the Telegram chat.
+   - The bot validates the Netscape format and YouTube tokens.
+   - If valid, it saves the file to `/app/cookies/cookies.txt` and replies with a confirmation.
+   - The new cookies take effect immediately for all subsequent downloads.
 
 ## Configuration Reference
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | (required) | Bot token from @BotFather |
-| `ALLOWED_USER_IDS` | (required) | Comma-separated Telegram user IDs |
+| `ALLOWED_USERNAMES` | `""` | Comma-separated allowed usernames (e.g. `alice, @bob`) |
+| `ALLOWED_USER_IDS` | `""` | Comma-separated allowed user IDs (at least one ID or username required) |
 | `DOWNLOAD_DIR` | `/tmp/yt-downloads` | Temporary download directory |
 | `MAX_VIDEO_DURATION_MINUTES` | `30` | Maximum video duration allowed |
 | `CLEANUP_INTERVAL_MINUTES` | `60` | How often to run file cleanup |
@@ -90,7 +118,7 @@ docker compose logs -f
 
 ### Downloads failing
 - Update yt-dlp: Send `/update` to the bot, or restart the container
-- Refresh YouTube cookies: Re-export from your browser and copy to `cookies/cookies.txt`
+- Refresh YouTube cookies: Export from your browser and send `cookies.txt` as a document directly into the Telegram chat (or check `/cookies`).
 
 ### Video too large
 - The bot auto re-encodes to fit Telegram's 50 MB limit

@@ -13,6 +13,7 @@ class Config:
     # Telegram
     TELEGRAM_BOT_TOKEN: str = ""
     ALLOWED_USER_IDS: list[int] = field(default_factory=list)
+    ALLOWED_USERNAMES: list[str] = field(default_factory=list)
 
     # Downloads
     DOWNLOAD_DIR: str = "/tmp/yt-downloads"
@@ -41,11 +42,33 @@ class Config:
         if not token:
             raise ValueError("TELEGRAM_BOT_TOKEN environment variable is required")
 
-        raw_ids = os.environ.get("ALLOWED_USER_IDS", "")
-        if not raw_ids:
-            raise ValueError("ALLOWED_USER_IDS environment variable is required")
+        allowed_ids: list[int] = []
+        allowed_usernames: list[str] = []
 
-        allowed_ids = [int(uid.strip()) for uid in raw_ids.split(",") if uid.strip()]
+        # Parse from ALLOWED_USER_IDS, ALLOWED_USERNAMES, and ALLOWED_USERS
+        raw_inputs = [
+            os.environ.get("ALLOWED_USER_IDS", ""),
+            os.environ.get("ALLOWED_USERNAMES", ""),
+            os.environ.get("ALLOWED_USERS", ""),
+        ]
+        combined_raw = ",".join(filter(None, raw_inputs))
+        for item in combined_raw.split(","):
+            cleaned = item.strip()
+            if not cleaned:
+                continue
+            without_at = cleaned.lstrip("@")
+            if without_at.isdigit() or (without_at.startswith("-") and without_at[1:].isdigit()):
+                allowed_ids.append(int(without_at))
+            else:
+                allowed_usernames.append(without_at.lower())
+
+        allowed_ids = list(dict.fromkeys(allowed_ids))
+        allowed_usernames = list(dict.fromkeys(allowed_usernames))
+
+        if not allowed_ids and not allowed_usernames:
+            raise ValueError(
+                "At least one of ALLOWED_USER_IDS or ALLOWED_USERNAMES environment variable is required"
+            )
 
         s3_enabled = os.environ.get("S3_ENABLED", "true").lower() in ("true", "1", "yes")
         s3_bucket = os.environ.get("S3_BUCKET_NAME", "")
@@ -67,6 +90,7 @@ class Config:
         return cls(
             TELEGRAM_BOT_TOKEN=token,
             ALLOWED_USER_IDS=allowed_ids,
+            ALLOWED_USERNAMES=allowed_usernames,
             DOWNLOAD_DIR=download_dir,
             MAX_VIDEO_DURATION_MINUTES=int(
                 os.environ.get("MAX_VIDEO_DURATION_MINUTES", "30")

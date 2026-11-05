@@ -58,16 +58,28 @@ def _get_s3():
 # ---------------------------------------------------------------------------
 
 
+def is_user_authorized(user) -> bool:
+    """Check if a Telegram user is authorized by ID or username."""
+    if user is None:
+        return False
+    if user.id in config.ALLOWED_USER_IDS:
+        return True
+    if user.username and user.username.lower() in [u.lower() for u in config.ALLOWED_USERNAMES]:
+        return True
+    return False
+
+
 def authorized_only(func):
-    """Decorator that restricts handler access to whitelisted user IDs."""
+    """Decorator that restricts handler access to whitelisted users (by ID or username)."""
 
     @functools.wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
-        if user is None or user.id not in config.ALLOWED_USER_IDS:
+        if not is_user_authorized(user):
             logger.warning(
-                "Unauthorized access attempt by user %s (ID: %s)",
+                "Unauthorized access attempt by user %s (@%s, ID: %s)",
                 user.full_name if user else "unknown",
+                user.username if user else "none",
                 user.id if user else "unknown",
             )
             if update.message:
@@ -96,7 +108,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "*Other commands:*\n"
         "• `/help` — Show usage instructions\n"
         "• `/update` — Update yt\\-dlp to latest version\n"
-        "• `/cookies` — Check or update YouTube cookies",
+        "• `/cookies` — Check or update YouTube cookies\n"
+        "• `/users` — View authorized users\n"
+        "• `/authorize` — Whitelist a new user by username or ID",
         parse_mode="MarkdownV2",
     )
 
@@ -117,7 +131,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• Videos over 50 MB are automatically re\\-encoded\n\n"
         "*Admin commands:*\n"
         "• `/update` — Update yt\\-dlp to the latest version\n"
-        "• `/cookies` — View cookies status or upload a new `cookies.txt`",
+        "• `/cookies` — View cookies status or upload a new `cookies.txt`\n"
+        "• `/users` — View all authorized usernames and IDs\n"
+        "• `/authorize <@username or ID>` — Add a user to whitelist\n"
+        "• `/deauthorize <@username or ID>` — Remove a user from whitelist",
         parse_mode="MarkdownV2",
     )
 
@@ -222,6 +239,86 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception as exc:
         await status_msg.edit_text(f"❌ Update failed: {exc}")
         logger.exception("Failed to update yt-dlp")
+
+
+@authorized_only
+async def authorize_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /authorize <@username or user_id> — whitelist a user at runtime."""
+    if not context.args:
+        await update.message.reply_text(
+            "Usage:\n"
+            "• `/authorize @username` — allow a user by username\n"
+            "• `/authorize <user_id>` — allow a user by numeric ID\n"
+            "• `/users` — view all authorized users",
+            parse_mode="Markdown",
+        )
+        return
+
+    target = context.args[0].strip()
+    clean_target = target.lstrip("@").lower()
+
+    if clean_target.isdigit() or (clean_target.startswith("-") and clean_target[1:].isdigit()):
+        uid = int(clean_target)
+        if uid not in config.ALLOWED_USER_IDS:
+            config.ALLOWED_USER_IDS.append(uid)
+            logger.info("User ID %d authorized by %s", uid, update.effective_user.id)
+            await update.message.reply_text(f"✅ User ID `{uid}` has been authorized.", parse_mode="Markdown")
+        else:
+            await update.message.reply_text(f"ℹ️ User ID `{uid}` is already authorized.", parse_mode="Markdown")
+    else:
+        if clean_target not in [u.lower() for u in config.ALLOWED_USERNAMES]:
+            config.ALLOWED_USERNAMES.append(clean_target)
+            logger.info("Username @%s authorized by %s", clean_target, update.effective_user.id)
+            await update.message.reply_text(f"✅ Username `@{clean_target}` has been authorized.", parse_mode="Markdown")
+        else:
+            await update.message.reply_text(f"ℹ️ Username `@{clean_target}` is already authorized.", parse_mode="Markdown")
+
+
+@authorized_only
+async def deauthorize_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /deauthorize <@username or user_id> — remove a user from whitelist."""
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: `/deauthorize <@username or user_id>`",
+            parse_mode="Markdown",
+        )
+        return
+
+    target = context.args[0].strip().lstrip("@").lower()
+
+    if target.isdigit() or (target.startswith("-") and target[1:].isdigit()):
+        uid = int(target)
+        if uid in config.ALLOWED_USER_IDS:
+            config.ALLOWED_USER_IDS.remove(uid)
+            logger.info("User ID %d deauthorized by %s", uid, update.effective_user.id)
+            await update.message.reply_text(f"✅ User ID `{uid}` has been removed.", parse_mode="Markdown")
+        else:
+            await update.message.reply_text(f"⚠️ User ID `{uid}` was not in the authorized list.", parse_mode="Markdown")
+    else:
+        matching = [u for u in config.ALLOWED_USERNAMES if u.lower() == target]
+        if matching:
+            for m in matching:
+                config.ALLOWED_USERNAMES.remove(m)
+            logger.info("Username @%s deauthorized by %s", target, update.effective_user.id)
+            await update.message.reply_text(f"✅ Username `@{target}` has been removed.", parse_mode="Markdown")
+        else:
+            await update.message.reply_text(f"⚠️ Username `@{target}` was not in the authorized list.", parse_mode="Markdown")
+
+
+@authorized_only
+async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /users — list all authorized usernames and IDs."""
+    ids_str = ", ".join(f"`{i}`" for i in config.ALLOWED_USER_IDS) or "_None_"
+    users_str = ", ".join(f"`@{u}`" for u in config.ALLOWED_USERNAMES) or "_None_"
+
+    await update.message.reply_text(
+        f"👥 *Authorized Access List*\n\n"
+        f"• *Usernames:* {users_str}\n"
+        f"• *User IDs:* {ids_str}\n\n"
+        f"💡 Use `/authorize <@username or ID>` to add\n"
+        f"💡 Use `/deauthorize <@username or ID>` to remove",
+        parse_mode="Markdown",
+    )
 
 
 @authorized_only
@@ -386,6 +483,10 @@ def register_handlers(application) -> None:
     application.add_handler(CommandHandler("download", download_command))
     application.add_handler(CommandHandler("update", update_command))
     application.add_handler(CommandHandler("cookies", cookies_command))
+    application.add_handler(CommandHandler("authorize", authorize_command))
+    application.add_handler(CommandHandler("auth", authorize_command))
+    application.add_handler(CommandHandler("deauthorize", deauthorize_command))
+    application.add_handler(CommandHandler("users", users_command))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)

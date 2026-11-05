@@ -14,7 +14,8 @@ logger = logging.getLogger(__name__)
 def main() -> None:
     """Build the bot application and start polling."""
     logger.info("Starting Telegram YouTube Downloader Bot")
-    logger.info("Allowed users: %s", config.ALLOWED_USER_IDS)
+    logger.info("Allowed user IDs: %s", config.ALLOWED_USER_IDS)
+    logger.info("Allowed usernames: %s", config.ALLOWED_USERNAMES)
     logger.info("Download dir: %s", config.DOWNLOAD_DIR)
     logger.info("S3 enabled: %s", config.S3_ENABLED)
 
