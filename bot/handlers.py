@@ -20,7 +20,9 @@ from bot.downloader import (
     ReencodeError,
     VideoDurationError,
     VideoTooLongError,
+    download_audio,
     download_video,
+    reencode_audio_to_fit,
     reencode_to_fit,
 )
 from bot.s3 import get_s3_client
@@ -100,11 +102,12 @@ def authorized_only(func):
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the /start command — send a welcome message."""
     await update.message.reply_text(
-        "🎬 *YouTube Video Downloader Bot*\n\n"
-        "Send me a YouTube link and I'll download the video and send it to you\\!\n\n"
+        "🎬 *YouTube Video & Audio Downloader Bot*\n\n"
+        "Send me a YouTube link and I'll download the video or audio for you\\!\n\n"
         "*How to use:*\n"
-        "• Just paste a YouTube URL in the chat\n"
-        "• Or use `/download <url>`\n\n"
+        "• Paste a YouTube URL to download video\n"
+        "• `/download <url>` — Download video\n"
+        "• `/audio <url>` \\(or `/mp3`\\) — Download audio as MP3\n\n"
         "*Other commands:*\n"
         "• `/help` — Show usage instructions\n"
         "• `/update` — Update yt\\-dlp to latest version\n"
@@ -119,16 +122,18 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """Handle the /help command — show usage instructions."""
     await update.message.reply_text(
         "📖 *Usage Instructions*\n\n"
-        "*Download a video:*\n"
-        "• Paste any YouTube link directly in the chat\n"
-        "• Or use: `/download <youtube_url>`\n\n"
+        "*Download video or audio:*\n"
+        "• Paste any YouTube link to download video\n"
+        "• Or use: `/download <youtube_url>`\n"
+        "• Or use: `/audio <youtube_url>` \\(or `/mp3`\\) to download MP3\n"
+        "• You can also reply to a YouTube link with `/audio` or `/mp3`\n\n"
         "*Supported link formats:*\n"
         "• `youtube.com/watch?v=...`\n"
         "• `youtu.be/...`\n"
         "• `youtube.com/shorts/...`\n\n"
         "*Limits:*\n"
         f"• Max video duration: {config.MAX_VIDEO_DURATION_MINUTES} minutes\n"
-        "• Videos over 50 MB are automatically re\\-encoded\n\n"
+        "• Files over 50 MB are automatically re\\-encoded to fit Telegram limits\n\n"
         "*Admin commands:*\n"
         "• `/update` — Update yt\\-dlp to the latest version\n"
         "• `/cookies` — View cookies status or upload a new `cookies.txt`\n"
@@ -328,19 +333,55 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 @authorized_only
 async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the /download command — download a video by URL."""
-    if not context.args:
+    url = None
+    if context.args:
+        url = context.args[0]
+    elif update.message and update.message.reply_to_message:
+        reply = update.message.reply_to_message
+        text_to_check = reply.text or reply.caption or ""
+        match = YOUTUBE_URL_PATTERN.search(text_to_check)
+        if match:
+            url = match.group(0)
+
+    if not url:
         await update.message.reply_text(
-            "Usage: `/download <youtube_url>`",
+            "Usage: `/download <youtube_url>` (or reply to a YouTube link with `/download`)",
             parse_mode="Markdown",
         )
         return
 
-    url = context.args[0]
     if not YOUTUBE_URL_PATTERN.match(url):
         await update.message.reply_text("⚠️ That doesn't look like a YouTube URL.")
         return
 
     await _process_download(update, context, url)
+
+
+@authorized_only
+async def audio_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the /audio or /mp3 command — extract and download audio as MP3."""
+    url = None
+    if context.args:
+        url = context.args[0]
+    elif update.message and update.message.reply_to_message:
+        reply = update.message.reply_to_message
+        text_to_check = reply.text or reply.caption or ""
+        match = YOUTUBE_URL_PATTERN.search(text_to_check)
+        if match:
+            url = match.group(0)
+
+    if not url:
+        await update.message.reply_text(
+            "Usage: `/audio <youtube_url>` (or reply to a YouTube link with `/audio`)",
+            parse_mode="Markdown",
+        )
+        return
+
+    if not YOUTUBE_URL_PATTERN.match(url):
+        await update.message.reply_text("⚠️ That doesn't look like a YouTube URL.")
+        return
+
+    await _process_audio_download(update, context, url)
 
 
 # ---------------------------------------------------------------------------
@@ -495,6 +536,134 @@ async def _process_download(
         )
 
 
+async def _process_audio_download(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, url: str
+) -> None:
+    """Download audio from a YouTube video as MP3 and send to the user."""
+    status_msg = await update.message.reply_text("⏳ Extracting audio...")
+    logger.info("Audio download requested: %s (user: %s)", url, update.effective_user.id)
+
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: download_audio(
+                url=url,
+                download_dir=config.DOWNLOAD_DIR,
+                cookies_file=config.YOUTUBE_COOKIES_FILE,
+                max_duration_minutes=max(config.MAX_VIDEO_DURATION_MINUTES, 60),
+            ),
+        )
+
+        filepath = result.filepath
+        filesize = result.filesize
+        max_size_bytes = config.TELEGRAM_MAX_FILE_SIZE_MB * 1024 * 1024
+
+        # Re-encode if too large
+        if filesize > max_size_bytes:
+            size_mb = filesize / 1024 / 1024
+            await status_msg.edit_text(
+                f"🔄 Audio is too large ({size_mb:.1f} MB). "
+                "Re-encoding to fit Telegram's limit..."
+            )
+            filepath = await loop.run_in_executor(
+                None,
+                lambda: reencode_audio_to_fit(filepath, result.duration),
+            )
+
+        # Upload to Telegram
+        await status_msg.edit_text("📤 Uploading audio to Telegram...")
+
+        with open(filepath, "rb") as audio_file:
+            kwargs = {
+                "audio": audio_file,
+                "title": result.title,
+                "performer": result.artist,
+                "duration": result.duration,
+            }
+            # Attach thumbnail if available
+            if result.thumbnail_path and os.path.isfile(result.thumbnail_path):
+                kwargs["thumbnail"] = open(result.thumbnail_path, "rb")
+
+            try:
+                await update.message.reply_audio(**kwargs)
+            finally:
+                thumb = kwargs.get("thumbnail")
+                if thumb and hasattr(thumb, "close"):
+                    thumb.close()
+
+        # Delete status message
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+
+        logger.info("Audio sent successfully: %s by %s", result.title, result.artist)
+
+        # Upload to S3 in the background if enabled
+        s3 = _get_s3()
+        if s3:
+            try:
+                await loop.run_in_executor(
+                    None,
+                    lambda: s3.upload_file(filepath),
+                )
+            except Exception:
+                logger.exception("Failed to upload audio to S3 (non-critical)")
+
+        # Clean up thumbnail
+        if result.thumbnail_path and os.path.isfile(result.thumbnail_path):
+            try:
+                os.remove(result.thumbnail_path)
+            except OSError:
+                pass
+
+    except VideoDurationError as exc:
+        await status_msg.edit_text(
+            f"⚠️ {exc}\n\n"
+            f"Maximum allowed duration: {max(config.MAX_VIDEO_DURATION_MINUTES, 60)} minutes."
+        )
+    except VideoTooLongError:
+        await status_msg.edit_text(
+            "⚠️ Audio is too long to compress within Telegram's 50 MB limit.\n"
+            "Try a shorter track."
+        )
+    except ReencodeError as exc:
+        logger.exception("Audio re-encode failed")
+        await status_msg.edit_text(
+            f"❌ Failed to re-encode audio: {exc}\n"
+            "Please try a shorter track."
+        )
+    except DownloadError as exc:
+        logger.exception("Audio download failed")
+        err_text = str(exc)
+        err_lower = err_text.lower()
+        if (
+            "confirm you're not a bot" in err_lower
+            or "confirm you’re not a bot" in err_lower
+            or "sign in to confirm" in err_lower
+            or "use --cookies" in err_lower
+        ):
+            await status_msg.edit_text(
+                "❌ *Download failed: YouTube Bot Verification Required*\n\n"
+                "YouTube blocked this download with: _\"Sign in to confirm you're not a bot\"_.\n\n"
+                "💡 *How to get & update cookies:*\n"
+                "1. Install browser extension *\"Get cookies.txt LOCALLY\"* ([Chrome](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc) / [Firefox](https://addons.mozilla.org/en-US/firefox/addon/get-cookies-txt-locally/))\n"
+                "2. Open YouTube while logged in (use a secondary/burner account)\n"
+                "3. Click the extension icon and export as `cookies.txt`\n"
+                "4. **Attach and send the `cookies.txt` file directly into this chat**\n\n"
+                "Check `/cookies` to verify status anytime.",
+                parse_mode="Markdown",
+            )
+        else:
+            await status_msg.edit_text(f"❌ Download failed: {exc}")
+    except Exception as exc:
+        logger.exception("Unexpected error during audio download")
+        await status_msg.edit_text(
+            "❌ An unexpected error occurred. Please try again."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Handler registration
 # ---------------------------------------------------------------------------
@@ -505,6 +674,8 @@ def register_handlers(application) -> None:
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("download", download_command))
+    application.add_handler(CommandHandler("audio", audio_command))
+    application.add_handler(CommandHandler("mp3", audio_command))
     application.add_handler(CommandHandler("update", update_command))
     application.add_handler(CommandHandler("cookies", cookies_command))
     application.add_handler(CommandHandler("authorize", authorize_command))
@@ -516,3 +687,4 @@ def register_handlers(application) -> None:
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
     logger.info("Handlers registered")
+

@@ -4,8 +4,9 @@ A Telegram bot that downloads YouTube videos and sends them directly to your cha
 
 ## Features
 - Send a YouTube link → receive the video in Telegram
+- Download audio as MP3 with `/audio <url>` or `/mp3 <url>` (with ID3 metadata & album art)
 - Auto-detects YouTube URLs or use `/download` command
-- Auto re-encodes videos exceeding Telegram's 50 MB limit
+- Auto re-encodes videos and audio exceeding Telegram's 50 MB limit
 - Stores videos temporarily in AWS S3
 - Auto-updates yt-dlp on every restart
 - YouTube cookies support to avoid blocking
@@ -63,7 +64,8 @@ docker compose logs -f
 |---------|-------------|
 | `/start` | Welcome message and usage info |
 | `/help` | Show help and usage instructions |
-| `/download <url>` | Download a YouTube video |
+| `/download <url>` | Download a YouTube video (also works via reply) |
+| `/audio <url>` or `/mp3 <url>` | Download audio as high-quality MP3 (also works via reply) |
 | `/update` | Update yt-dlp to the latest version |
 | `/cookies` | View current cookies status and instructions |
 | `/users` | View all authorized usernames and IDs |

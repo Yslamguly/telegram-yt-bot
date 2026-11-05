@@ -51,13 +51,14 @@ class ReencodeError(Exception):
 
 @dataclass
 class DownloadResult:
-    """Result of a successful video download."""
+    """Result of a successful video or audio download."""
 
     filepath: str
     title: str
     duration: int  # seconds
     filesize: int  # bytes
     thumbnail_path: str | None = None
+    artist: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +182,128 @@ def download_video(
         raise DownloadError(f"Unexpected error: {exc}") from exc
 
 
+def download_audio(
+    url: str,
+    download_dir: str,
+    cookies_file: str | None = None,
+    max_duration_minutes: int = 60,
+) -> DownloadResult:
+    """Download audio from a YouTube video as MP3 using yt-dlp.
+
+    Args:
+        url: YouTube video URL.
+        download_dir: Directory to save the downloaded file.
+        cookies_file: Optional path to a Netscape cookies file.
+        max_duration_minutes: Reject videos longer than this.
+
+    Returns:
+        A ``DownloadResult`` with metadata and local MP3 file path.
+
+    Raises:
+        VideoDurationError: If the media is too long.
+        DownloadError: On any yt-dlp failure.
+    """
+    max_duration_seconds = max_duration_minutes * 60
+
+    # -- Base yt-dlp options for audio --------------------------------------
+    ydl_opts: dict = {
+        "format": "bestaudio/best",
+        "outtmpl": os.path.join(download_dir, "%(id)s.%(ext)s"),
+        "writethumbnail": True,
+        "noplaylist": True,
+        "quiet": False,
+        "no_warnings": False,
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            },
+            {
+                "key": "FFmpegThumbnailsConvertor",
+                "format": "jpg",
+            },
+            {
+                "key": "FFmpegMetadata",
+                "add_metadata": True,
+            },
+        ],
+        "js_runtimes": {
+            "deno": {},
+            "node": {},
+        },
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "ios", "web"]
+            }
+        },
+    }
+
+    if cookies_file and os.path.isfile(cookies_file) and os.path.getsize(cookies_file) > 0:
+        ydl_opts["cookiefile"] = cookies_file
+        logger.info("Using YouTube cookies from %s (%d bytes)", cookies_file, os.path.getsize(cookies_file))
+    else:
+        logger.warning("No valid YouTube cookies found at %s — yt-dlp will proceed without cookies", cookies_file)
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # --- Pre-flight: check duration without downloading ------------
+            logger.info("Extracting audio info for %s", url)
+            info = ydl.extract_info(url, download=False)
+            if info is None:
+                raise DownloadError(f"Could not extract info for {url}")
+
+            duration = int(info.get("duration") or 0)
+            title = info.get("title", "Unknown")
+            artist = info.get("artist") or info.get("uploader") or info.get("channel") or "Unknown"
+
+            if duration > max_duration_seconds:
+                raise VideoDurationError(duration, max_duration_seconds)
+
+            # --- Download & extract audio ----------------------------------
+            logger.info("Downloading audio: %s by %s (%d s)", title, artist, duration)
+            info = ydl.extract_info(url, download=True)
+            if info is None:
+                raise DownloadError(f"Download returned no info for {url}")
+
+            # Locate the downloaded MP3 file
+            video_id = info["id"]
+            filepath = _find_downloaded_file(download_dir, video_id, "mp3")
+            if filepath is None:
+                raise DownloadError(
+                    f"Downloaded audio file not found for video {video_id}"
+                )
+
+            filesize = os.path.getsize(filepath)
+
+            # Locate thumbnail
+            thumbnail_path = _find_downloaded_file(
+                download_dir, video_id, "jpg"
+            )
+
+            logger.info(
+                "Audio download complete: %s (%.1f MB)",
+                filepath,
+                filesize / 1024 / 1024,
+            )
+
+            return DownloadResult(
+                filepath=filepath,
+                title=title,
+                duration=duration,
+                filesize=filesize,
+                thumbnail_path=thumbnail_path,
+                artist=artist,
+            )
+
+    except (VideoDurationError, DownloadError):
+        raise
+    except yt_dlp.utils.DownloadError as exc:
+        raise DownloadError(str(exc)) from exc
+    except Exception as exc:
+        raise DownloadError(f"Unexpected error: {exc}") from exc
+
+
 def reencode_to_fit(
     filepath: str,
     duration: int,
@@ -267,6 +390,65 @@ def reencode_to_fit(
     os.remove(filepath)
     logger.info(
         "Re-encode complete: %s (%.1f MB)",
+        output_path,
+        os.path.getsize(output_path) / 1024 / 1024,
+    )
+    return output_path
+
+
+def reencode_audio_to_fit(
+    filepath: str,
+    duration: int,
+    max_size_mb: int = 49,
+) -> str:
+    """Re-encode an MP3 audio file so its file size fits under *max_size_mb*.
+
+    Args:
+        filepath: Path to the input audio file.
+        duration: Audio duration in seconds.
+        max_size_mb: Maximum output file size in megabytes.
+
+    Returns:
+        Path to the re-encoded audio file.
+
+    Raises:
+        ReencodeError: If ffmpeg fails.
+    """
+    if duration <= 0:
+        raise ReencodeError("Cannot re-encode: audio duration is 0")
+
+    # Target bitrate in kbps
+    target_bitrate_kbps = int((max_size_mb * 8 * 1024) / duration)
+    # Clamp minimum bitrate to 64 kbps (intelligible for speech/music)
+    target_bitrate_kbps = max(64, min(target_bitrate_kbps, 192))
+
+    output_path = filepath.replace(".mp3", "_compressed.mp3")
+    logger.info(
+        "Re-encoding audio %s → target bitrate %d kbps",
+        filepath,
+        target_bitrate_kbps,
+    )
+
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", filepath,
+                "-c:a", "libmp3lame",
+                "-b:a", f"{target_bitrate_kbps}k",
+                output_path,
+            ],
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode(errors="replace") if exc.stderr else ""
+        raise ReencodeError(f"ffmpeg audio re-encode failed: {stderr}") from exc
+
+    # Remove original and replace
+    os.remove(filepath)
+    logger.info(
+        "Audio re-encode complete: %s (%.1f MB)",
         output_path,
         os.path.getsize(output_path) / 1024 / 1024,
     )
