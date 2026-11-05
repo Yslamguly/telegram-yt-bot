@@ -160,7 +160,11 @@ async def cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text(
             f"🍪 *YouTube Cookies Status: Missing*\n\n"
             f"No cookies file found at `{target_path}`.\n\n"
-            f"💡 *To add cookies:* Export cookies from your browser and send the `cookies.txt` file as a document directly into this chat.",
+            f"💡 *How to get cookies:*\n"
+            f"1. Install extension *\"Get cookies.txt LOCALLY\"* ([Chrome](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc) / [Firefox](https://addons.mozilla.org/en-US/firefox/addon/get-cookies-txt-locally/))\n"
+            f"2. Open YouTube while logged in (use a burner account)\n"
+            f"3. Click the extension icon and export as `cookies.txt`\n"
+            f"4. Send the `cookies.txt` file as a document directly into this chat",
             parse_mode="Markdown",
         )
 
@@ -463,7 +467,27 @@ async def _process_download(
         )
     except DownloadError as exc:
         logger.exception("Download failed")
-        await status_msg.edit_text(f"❌ Download failed: {exc}")
+        err_text = str(exc)
+        err_lower = err_text.lower()
+        if (
+            "confirm you're not a bot" in err_lower
+            or "confirm you’re not a bot" in err_lower
+            or "sign in to confirm" in err_lower
+            or "use --cookies" in err_lower
+        ):
+            await status_msg.edit_text(
+                "❌ *Download failed: YouTube Bot Verification Required*\n\n"
+                "YouTube blocked this download with: _\"Sign in to confirm you're not a bot\"_.\n\n"
+                "💡 *How to get & update cookies:*\n"
+                "1. Install browser extension *\"Get cookies.txt LOCALLY\"* ([Chrome](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc) / [Firefox](https://addons.mozilla.org/en-US/firefox/addon/get-cookies-txt-locally/))\n"
+                "2. Open YouTube while logged in (use a secondary/burner account)\n"
+                "3. Click the extension icon and export as `cookies.txt`\n"
+                "4. **Attach and send the `cookies.txt` file directly into this chat**\n\n"
+                "Check `/cookies` to verify status anytime.",
+                parse_mode="Markdown",
+            )
+        else:
+            await status_msg.edit_text(f"❌ Download failed: {exc}")
     except Exception as exc:
         logger.exception("Unexpected error during download")
         await status_msg.edit_text(
