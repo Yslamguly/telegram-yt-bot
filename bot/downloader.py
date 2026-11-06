@@ -59,6 +59,8 @@ class DownloadResult:
     filesize: int  # bytes
     thumbnail_path: str | None = None
     artist: str | None = None
+    width: int | None = None
+    height: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -155,15 +157,29 @@ def download_video(
 
             filesize = os.path.getsize(filepath)
 
-            # Locate thumbnail
+            # Determine video width and height
+            width = info.get("width")
+            height = info.get("height")
+            if not width or not height:
+                probed_w, probed_h = get_video_dimensions(filepath)
+                width = width or probed_w
+                height = height or probed_h
+
+            # Locate and prepare thumbnail
             thumbnail_path = _find_downloaded_file(
                 download_dir, video_id, "jpg"
             )
+            if thumbnail_path and os.path.isfile(thumbnail_path):
+                thumbnail_path = prepare_thumbnail(thumbnail_path, width, height)
+            elif not thumbnail_path:
+                thumbnail_path = generate_thumbnail_from_video(filepath)
 
             logger.info(
-                "Download complete: %s (%.1f MB)",
+                "Download complete: %s (%.1f MB, %sx%s)",
                 filepath,
                 filesize / 1024 / 1024,
+                width or "?",
+                height or "?",
             )
 
             return DownloadResult(
@@ -172,6 +188,8 @@ def download_video(
                 duration=duration,
                 filesize=filesize,
                 thumbnail_path=thumbnail_path,
+                width=width,
+                height=height,
             )
 
     except (VideoDurationError, DownloadError):
@@ -458,6 +476,145 @@ def reencode_audio_to_fit(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def get_video_dimensions(filepath: str) -> tuple[int | None, int | None]:
+    """Extract width and height of a video or image file using ffprobe.
+
+    Args:
+        filepath: Path to the video or image file.
+
+    Returns:
+        (width, height) tuple or (None, None) if detection fails.
+    """
+    try:
+        cmd = [
+            "ffprobe",
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "csv=s=x:p=0",
+            filepath,
+        ]
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+        output = result.stdout.strip()
+        if "x" in output:
+            parts = output.split("x")
+            return int(parts[0]), int(parts[1])
+    except Exception as exc:
+        logger.warning("Could not probe dimensions for %s: %s", filepath, exc)
+    return None, None
+
+
+def prepare_thumbnail(
+    thumbnail_path: str,
+    video_width: int | None = None,
+    video_height: int | None = None,
+) -> str | None:
+    """Optimize a thumbnail for Telegram.
+
+    Ensures dimensions do not exceed 320x320 px and removes 4:3 letterboxing
+    if the video is widescreen (16:9) but the thumbnail is 4:3 (e.g., YouTube's hqdefault).
+
+    Args:
+        thumbnail_path: Path to the original thumbnail image.
+        video_width: Video width in pixels (if known).
+        video_height: Video height in pixels (if known).
+
+    Returns:
+        Path to the optimized thumbnail file, or the original path on failure.
+    """
+    if not thumbnail_path or not os.path.isfile(thumbnail_path):
+        return None
+
+    thumb_w, thumb_h = get_video_dimensions(thumbnail_path)
+    if not thumb_w or not thumb_h:
+        return thumbnail_path
+
+    out_path = thumbnail_path.rsplit(".", 1)[0] + "_opt.jpg"
+    vf_filters = []
+
+    # If video is widescreen (~16:9 or wider) and thumbnail is 4:3 (480x360 or similar with black bars)
+    if video_width and video_height and video_height > 0 and thumb_h > 0:
+        video_ratio = video_width / video_height
+        thumb_ratio = thumb_w / thumb_h
+        # YouTube hqdefault.jpg is 480x360 with 45px black bars on top and bottom
+        if video_ratio > 1.6 and thumb_w == 480 and thumb_h == 360:
+            vf_filters.append("crop=480:270:0:45")
+        elif video_ratio > 1.6 and abs(thumb_ratio - (4 / 3)) < 0.05:
+            # Crop 4:3 letterbox bars (remove top/bottom 12.5% padding)
+            new_h = int(thumb_w / (16 / 9))
+            y_offset = (thumb_h - new_h) // 2
+            vf_filters.append(f"crop={thumb_w}:{new_h}:0:{y_offset}")
+
+    # Scale to maximum 320px on the longest side (Telegram requirement)
+    vf_filters.append("scale='if(gt(iw,ih),min(320,iw),-2)':'if(gt(iw,ih),-2,min(320,ih))'")
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", thumbnail_path,
+        "-vf", ",".join(vf_filters),
+        "-q:v", "2",
+        out_path,
+    ]
+    try:
+        subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        if os.path.isfile(out_path) and os.path.getsize(out_path) > 0:
+            os.replace(out_path, thumbnail_path)
+            return thumbnail_path
+    except Exception as exc:
+        logger.warning("Failed to optimize thumbnail %s: %s", thumbnail_path, exc)
+        if os.path.isfile(out_path):
+            try:
+                os.remove(out_path)
+            except OSError:
+                pass
+
+    return thumbnail_path
+
+
+def generate_thumbnail_from_video(video_path: str) -> str | None:
+    """Generate a thumbnail from a video file if none was downloaded.
+
+    Args:
+        video_path: Path to the video file.
+
+    Returns:
+        Path to the generated JPEG thumbnail or None on failure.
+    """
+    thumb_path = video_path.rsplit(".", 1)[0] + "_thumb.jpg"
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", "00:00:01",
+        "-i", video_path,
+        "-vframes", "1",
+        "-vf", "scale='if(gt(iw,ih),min(320,iw),-2)':'if(gt(iw,ih),-2,min(320,ih))'",
+        "-q:v", "2",
+        thumb_path,
+    ]
+    try:
+        subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        if os.path.isfile(thumb_path) and os.path.getsize(thumb_path) > 0:
+            return thumb_path
+    except Exception as exc:
+        logger.warning("Could not generate fallback thumbnail for %s: %s", video_path, exc)
+    return None
 
 
 def _find_downloaded_file(

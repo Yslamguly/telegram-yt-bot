@@ -22,6 +22,7 @@ from bot.downloader import (
     VideoTooLongError,
     download_audio,
     download_video,
+    get_video_dimensions,
     reencode_audio_to_fit,
     reencode_to_fit,
 )
@@ -428,6 +429,8 @@ async def _process_download(
 
         filepath = result.filepath
         filesize = result.filesize
+        width = result.width
+        height = result.height
         max_size_bytes = config.TELEGRAM_MAX_FILE_SIZE_MB * 1024 * 1024
 
         # Re-encode if too large
@@ -441,6 +444,11 @@ async def _process_download(
                 None,
                 lambda: reencode_to_fit(filepath, result.duration),
             )
+            if not width or not height:
+                width, height = await loop.run_in_executor(
+                    None,
+                    lambda: get_video_dimensions(filepath),
+                )
 
         # Upload to Telegram
         await status_msg.edit_text("📤 Uploading to Telegram...")
@@ -452,6 +460,10 @@ async def _process_download(
                 "duration": result.duration,
                 "supports_streaming": True,
             }
+            if width and height:
+                kwargs["width"] = width
+                kwargs["height"] = height
+
             # Attach thumbnail if available
             if result.thumbnail_path and os.path.isfile(result.thumbnail_path):
                 kwargs["thumbnail"] = open(result.thumbnail_path, "rb")
